@@ -232,7 +232,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		return nil, err
 	}
 	capacity = cadvisor.CapacityFromMachineInfo(machineInfo)
-
+	glog.Infof("debugging: cgroup root is %v", nodeConfig.CgroupRoot)
 	cgroupRoot := nodeConfig.CgroupRoot
 	cgroupManager := NewCgroupManager(subsystems, nodeConfig.CgroupDriver)
 	// Check if Cgroup-root actually exists on the node
