@@ -18,6 +18,7 @@ package jsonpath
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
@@ -121,7 +122,14 @@ func (j *JSONPath) FindResults(data interface{}) ([][]reflect.Value, error) {
 // PrintResults writes the results into writer
 func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
 	for i, r := range results {
-		text, err := j.evalToText(r)
+		var text []byte
+		var err error
+		if r.Kind() == reflect.Interface && (r.Elem().Kind() == reflect.Map ||
+			r.Elem().Kind() == reflect.Slice || r.Elem().Kind() == reflect.Struct) {
+			text, err = json.Marshal(r.Interface())
+		} else {
+			text, err = j.evalToText(r)
+		}
 		if err != nil {
 			return err
 		}
@@ -133,6 +141,7 @@ func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
 		}
 	}
 	return nil
+
 }
 
 // walk visits tree rooted at the given node in DFS order
