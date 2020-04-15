@@ -58,7 +58,7 @@ func (p *JSONPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 		_, err = w.Write([]byte{'\n'})
 		return err
 	case *runtime.Unknown:
-		buf := bytes.Buffer{}
+		var buf bytes.Buffer
 		err := json.Indent(&buf, obj.Raw, "", "    ")
 		if err != nil {
 			return err
