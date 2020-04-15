@@ -38,6 +38,7 @@ type JSONPath struct {
 	endRange   int
 
 	allowMissingKeys bool
+	outputJSON       bool
 }
 
 // New creates a new JSONPath with the given name.
@@ -120,8 +121,21 @@ func (j *JSONPath) FindResults(data interface{}) ([][]reflect.Value, error) {
 	return fullResult, nil
 }
 
+func (j *JSONPath) EnableJSONOutput(v bool) {
+	j.outputJSON = v
+}
+
 // PrintResults writes the results into writer
 func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
+	if j.outputJSON {
+		// convert the []reflect.Value to something that json
+		// will be able to marshal
+		r := make([]interface{}, 0, len(results))
+		for i := range results {
+			r = append(r, results[i].Interface())
+		}
+		results = []reflect.Value{reflect.ValueOf(r)}
+	}
 	for i, r := range results {
 		var text []byte
 		var err error
@@ -140,6 +154,12 @@ func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
 		}
 		if outputJSON {
 			text, err = json.Marshal(r.Interface())
+			if err == nil && j.outputJSON {
+				var buf bytes.Buffer
+				err = json.Indent(&buf, text, "", "    ")
+				buf.WriteRune('\n')
+				text = buf.Bytes()
+			}
 		} else {
 			text, err = j.evalToText(r)
 		}
