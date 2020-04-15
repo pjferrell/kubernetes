@@ -149,7 +149,7 @@ func TestStructInput(t *testing.T) {
 			{"green", 20.01, false},
 		},
 		Labels: map[string]int{
-			"engieer":  10,
+			"engineer": 10,
 			"web/html": 15,
 			"k8s-app":  20,
 		},
@@ -161,11 +161,11 @@ func TestStructInput(t *testing.T) {
 
 	storeTests := []jsonpathTest{
 		{"plain", "hello jsonpath", nil, "hello jsonpath", false},
-		{"recursive", "{..}", []int{1, 2, 3}, "[1 2 3]", false},
+		{"recursive", "{..}", []int{1, 2, 3}, "[1,2,3]", false},
 		{"filter", "{[?(@<5)]}", []int{2, 6, 3, 7}, "2 3", false},
 		{"quote", `{"{"}`, nil, "{", false},
 		{"union", "{[1,3,4]}", []int{0, 1, 2, 3, 4}, "1 3 4", false},
-		{"array", "{[0:2]}", []string{"Monday", "Tudesday"}, "Monday Tudesday", false},
+		{"array", "{[0:2]}", []string{"Monday", "Tuesday"}, "Monday Tuesday", false},
 		{"variable", "hello {.Name}", storeData, "hello jsonpath", false},
 		{"dict/", "{$.Labels.web/html}", storeData, "15", false},
 		{"dict/", "{$.Employees.jason}", storeData, "manager", false},
@@ -173,13 +173,13 @@ func TestStructInput(t *testing.T) {
 		{"dict-", "{.Labels.k8s-app}", storeData, "20", false},
 		{"nest", "{.Bicycle[*].Color}", storeData, "red green", false},
 		{"allarray", "{.Book[*].Author}", storeData, "Nigel Rees Evelyn Waugh Herman Melville", false},
-		{"allfileds", "{.Bicycle.*}", storeData, "{red 19.95 true} {green 20.01 false}", false},
+		{"allfileds", "{.Bicycle.*}", storeData, `{"Color":"red","Price":19.95,"IsNew":true} {"Color":"green","Price":20.01,"IsNew":false}`, false},
 		{"recurfileds", "{..Price}", storeData, "8.95 12.99 8.99 19.95 20.01", false},
 		{"lastarray", "{.Book[-1:]}", storeData,
-			"{Category: fiction, Author: Herman Melville, Title: Moby Dick, Price: 8.99}", false},
+			`{"Category":"fiction","Author":"Herman Melville","Title":"Moby Dick","Price":8.99}`, false},
 		{"recurarray", "{..Book[2]}", storeData,
-			"{Category: fiction, Author: Herman Melville, Title: Moby Dick, Price: 8.99}", false},
-		{"bool", "{.Bicycle[?(@.IsNew==true)]}", storeData, "{red 19.95 true}", false},
+			`{"Category":"fiction","Author":"Herman Melville","Title":"Moby Dick","Price":8.99}`, false},
+		{"bool", "{.Bicycle[?(@.IsNew==true)]}", storeData, `{"Color":"red","Price":19.95,"IsNew":true}`, false},
 	}
 	testJSONPath(storeTests, false, t)
 
@@ -216,7 +216,13 @@ func TestJSONInput(t *testing.T) {
 		{"exists filter", "{[?(@.z)].id}", pointsData, "i2 i5", false},
 		{"bracket key", "{[0]['id']}", pointsData, "i1", false},
 	}
-	testJSONPath(pointsTests, false, t)
+	testJSONPath(pointsTests, true, t)
+
+	pointsFailureTests := []jsonpathTest{
+		{"filterMissingKey", "{[?(@.z)].id}", pointsData, "z is not found", true},
+		{"filterMissingKey2", "{[0]['notReal']}", pointsData, "notReal is not found", false},
+	}
+	testFailJSONPath(pointsFailureTests, t)
 }
 
 // TestKubernetes tests some use cases from kubernetes

@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"k8s.io/client-go/third_party/forked/golang/template"
+	"k8s.io/client-go/util/jsonpath/internal/fmtsort"
 )
 
 type JSONPath struct {
@@ -124,8 +125,20 @@ func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
 	for i, r := range results {
 		var text []byte
 		var err error
-		if r.Kind() == reflect.Interface && (r.Elem().Kind() == reflect.Map ||
-			r.Elem().Kind() == reflect.Slice || r.Elem().Kind() == reflect.Struct) {
+		outputJSON := true
+		kind := r.Kind()
+		if kind == reflect.Interface {
+			kind = r.Elem().Kind()
+		}
+		switch kind {
+		case reflect.Map:
+		case reflect.Array:
+		case reflect.Slice:
+		case reflect.Struct:
+		default:
+			outputJSON = false
+		}
+		if outputJSON {
 			text, err = json.Marshal(r.Interface())
 		} else {
 			text, err = j.evalToText(r)
@@ -394,22 +407,56 @@ func (j *JSONPath) evalWildcard(input []reflect.Value, node *WildcardNode) ([]re
 			continue
 		}
 
-		kind := value.Kind()
-		if kind == reflect.Struct {
-			for i := 0; i < value.NumField(); i++ {
-				results = append(results, value.Field(i))
-			}
-		} else if kind == reflect.Map {
-			for _, key := range value.MapKeys() {
-				results = append(results, value.MapIndex(key))
-			}
-		} else if kind == reflect.Array || kind == reflect.Slice || kind == reflect.String {
-			for i := 0; i < value.Len(); i++ {
-				results = append(results, value.Index(i))
-			}
+		iterable, indexFunc, length := iterHelper(value)
+		if !iterable {
+			continue
+		}
+		for i := 0; i < length; i++ {
+			results = append(results, indexFunc(i))
 		}
 	}
 	return results, nil
+}
+
+// valueIndexFunc is a type used for function closures that wrap an interable reflect.Value
+type valueIndexFunc func(index int) reflect.Value
+
+// iterHelper accepts a reflect.Value and returns
+// whether it is iterable, a function to access each instance by index, and length
+// Note: only Array/Slice/Struct/Map are considered iterable for use in jsonpath
+func iterHelper(value reflect.Value) (iterable bool, valueIndexFunc valueIndexFunc, length int) {
+	wrappedValue := value
+	iterable = true
+	switch value.Kind() {
+	case reflect.Array:
+		// original order is maintained
+		length = value.Len()
+		valueIndexFunc = func(i int) reflect.Value {
+			return wrappedValue.Index(i)
+		}
+	case reflect.Slice:
+		// original order is maintained
+		length = value.Len()
+		valueIndexFunc = func(i int) reflect.Value {
+			return wrappedValue.Index(i)
+		}
+	case reflect.Struct:
+		// field order is maintained
+		length = value.NumField()
+		valueIndexFunc = func(i int) reflect.Value {
+			return wrappedValue.Field(i)
+		}
+	case reflect.Map:
+		// keys are sorted based on the primitive type using internal/fmtsort
+		orderedMap := fmtsort.Sort(value)
+		length = orderedMap.Len()
+		valueIndexFunc = func(i int) reflect.Value {
+			return orderedMap.Value[i]
+		}
+	default:
+		iterable = false
+	}
+	return
 }
 
 // evalRecursive visits the given value recursively and pushes all of them to result
@@ -422,20 +469,14 @@ func (j *JSONPath) evalRecursive(input []reflect.Value, node *RecursiveNode) ([]
 			continue
 		}
 
-		kind := value.Kind()
-		if kind == reflect.Struct {
-			for i := 0; i < value.NumField(); i++ {
-				results = append(results, value.Field(i))
-			}
-		} else if kind == reflect.Map {
-			for _, key := range value.MapKeys() {
-				results = append(results, value.MapIndex(key))
-			}
-		} else if kind == reflect.Array || kind == reflect.Slice || kind == reflect.String {
-			for i := 0; i < value.Len(); i++ {
-				results = append(results, value.Index(i))
-			}
+		iterable, indexFunc, length := iterHelper(value)
+		if !iterable {
+			continue
 		}
+		for i := 0; i < length; i++ {
+			results = append(results, indexFunc(i))
+		}
+
 		if len(results) != 0 {
 			result = append(result, value)
 			output, err := j.evalRecursive(results, node)
@@ -448,74 +489,86 @@ func (j *JSONPath) evalRecursive(input []reflect.Value, node *RecursiveNode) ([]
 	return result, nil
 }
 
+func evalOperator(operator string, l reflect.Value, r reflect.Value) (pass bool, err error) {
+	var left, right interface{}
+	left = l.Interface()
+	right = r.Interface()
+	if reflect.ValueOf(left).Kind() == reflect.Int {
+		left = float64(left.(int))
+	}
+	if reflect.ValueOf(right).Kind() == reflect.Int {
+		right = float64(right.(int))
+	}
+	switch operator {
+	case "<":
+		pass, err = template.Less(left, right)
+	case ">":
+		pass, err = template.Greater(left, right)
+	case "==":
+		pass, err = template.Equal(left, right)
+	case "!=":
+		pass, err = template.NotEqual(left, right)
+	case "<=":
+		pass, err = template.LessEqual(left, right)
+	case ">=":
+		pass, err = template.GreaterEqual(left, right)
+	default:
+		return false, fmt.Errorf("unrecognized filter operator %s", operator)
+	}
+	// ignore comparisons for incompatible types
+	if err != nil && !(err.Error() == "invalid type for comparison" ||
+		err.Error() == "incompatible types for comparison") {
+		return false, err
+	}
+	return pass, nil
+}
+
 // evalFilter filters array according to FilterNode
 func (j *JSONPath) evalFilter(input []reflect.Value, node *FilterNode) ([]reflect.Value, error) {
 	results := []reflect.Value{}
 	for _, value := range input {
 		value, _ = template.Indirect(value)
 
-		if value.Kind() != reflect.Array && value.Kind() != reflect.Slice {
-			return input, fmt.Errorf("%v is not array or slice and cannot be filtered", value)
-		}
-		for i := 0; i < value.Len(); i++ {
-			temp := []reflect.Value{value.Index(i)}
-			lefts, err := j.evalList(temp, node.Left)
+		iterable, indexFunc, length := iterHelper(value)
 
-			//case exists
-			if node.Operator == "exists" {
-				if len(lefts) > 0 {
-					results = append(results, value.Index(i))
-				}
-				continue
+		// if the object isn't iterable, provide a dummy index function
+		if !iterable {
+			indexFunc = func(i int) reflect.Value {
+				return value
 			}
-
+			length = 1
+		}
+		for i := 0; i < length; i++ {
+			temp := []reflect.Value{indexFunc(i)}
+			lefts, err := j.evalList(temp, node.Left)
+			if err != nil && !j.allowMissingKeys {
+				return input, err
+			}
+			rights, err := j.evalList(temp, node.Right)
 			if err != nil {
 				return input, err
 			}
 
-			var left, right interface{}
 			switch {
 			case len(lefts) == 0:
 				continue
 			case len(lefts) > 1:
 				return input, fmt.Errorf("can only compare one element at a time")
-			}
-			left = lefts[0].Interface()
-
-			rights, err := j.evalList(temp, node.Right)
-			if err != nil {
-				return input, err
-			}
-			switch {
+			case node.Operator == "exists":
+				results = append(results, indexFunc(i))
+				continue
 			case len(rights) == 0:
 				continue
 			case len(rights) > 1:
 				return input, fmt.Errorf("can only compare one element at a time")
 			}
-			right = rights[0].Interface()
 
-			pass := false
-			switch node.Operator {
-			case "<":
-				pass, err = template.Less(left, right)
-			case ">":
-				pass, err = template.Greater(left, right)
-			case "==":
-				pass, err = template.Equal(left, right)
-			case "!=":
-				pass, err = template.NotEqual(left, right)
-			case "<=":
-				pass, err = template.LessEqual(left, right)
-			case ">=":
-				pass, err = template.GreaterEqual(left, right)
-			default:
-				return results, fmt.Errorf("unrecognized filter operator %s", node.Operator)
-			}
+			pass, err := evalOperator(node.Operator, lefts[0], rights[0])
 			if err != nil {
 				return results, err
 			}
 			if pass {
-				results = append(results, value.Index(i))
+				results = append(results, indexFunc(i))
 			}
 		}
 	}
