@@ -37,6 +37,7 @@ type JSONPath struct {
 	endRange   int
 
 	allowMissingKeys bool
+	outputJSON       bool
 }
 
 // New creates a new JSONPath with the given name.
@@ -119,15 +120,47 @@ func (j *JSONPath) FindResults(data interface{}) ([][]reflect.Value, error) {
 	return fullResult, nil
 }
 
+// EnableJSONOutput changes the PrintResults behavior to return a JSON array of results
+func (j *JSONPath) EnableJSONOutput(v bool) {
+	j.outputJSON = v
+}
+
 // PrintResults writes the results into writer
 func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
+	if j.outputJSON {
+		// convert the []reflect.Value to something that json
+		// will be able to marshal
+		r := make([]interface{}, 0, len(results))
+		for i := range results {
+			r = append(r, results[i].Interface())
+		}
+		results = []reflect.Value{reflect.ValueOf(r)}
+	}
 	for i, r := range results {
 		var text []byte
 		var err error
-		if r.Kind() == reflect.Interface && (r.Elem().Kind() == reflect.Map ||
-			r.Elem().Kind() == reflect.Slice || r.Elem().Kind() == reflect.Struct) {
-			text, err = json.Marshal(r.Interface())
-		} else {
+		outputJSON := true
+		kind := r.Kind()
+		if kind == reflect.Interface {
+			kind = r.Elem().Kind()
+		}
+		switch kind {
+		case reflect.Map:
+		case reflect.Array:
+		case reflect.Slice:
+		case reflect.Struct:
+		default:
+			outputJSON = false
+		}
+		switch {
+		case outputJSON || j.outputJSON:
+			if j.outputJSON {
+				text, err = json.MarshalIndent(r.Interface(), "", "    ")
+				text = append(text, '\n')
+			} else {
+				text, err = json.Marshal(r.Interface())
+			}
+		default:
 			text, err = j.evalToText(r)
 		}
 		if err != nil {
@@ -140,6 +173,7 @@ func (j *JSONPath) PrintResults(wr io.Writer, results []reflect.Value) error {
 			return err
 		}
 	}
+
 	return nil
 
 }
